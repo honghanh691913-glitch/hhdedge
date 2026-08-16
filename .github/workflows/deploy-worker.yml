@@ -25,8 +25,47 @@ jobs:
         with:
           ref: main
 
-      - name: Deploy to Cloudflare
-        uses: cloudflare/wrangler-action@v3
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      - name: Upload Worker code and keep Dashboard bindings
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          WORKER_NAME: v20251104
+        run: |
+          set -euo pipefail
+
+          COMPAT_DATE=$(sed -n 's/^compatibility_date[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' wrangler.toml | head -n 1)
+          if [ -z "$COMPAT_DATE" ]; then
+            COMPAT_DATE="2025-11-04"
+          fi
+
+          jq -n --arg compat_date "$COMPAT_DATE" '{
+            main_module: "_worker.js",
+            compatibility_date: $compat_date,
+            keep_assets: true,
+            keep_bindings: [
+              "ai",
+              "analytics_engine",
+              "browser_rendering",
+              "d1",
+              "durable_object_namespace",
+              "hyperdrive",
+              "kv_namespace",
+              "mtls_certificate",
+              "plain_text",
+              "queue",
+              "r2_bucket",
+              "secret_text",
+              "service",
+              "vectorize",
+              "version_metadata"
+            ]
+          }' > metadata.json
+
+          RESPONSE=$(curl --fail-with-body -sS \
+            -X PUT "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/scripts/${WORKER_NAME}" \
+            -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+            -F "metadata=@metadata.json;type=application/json" \
+            -F "_worker.js=@_worker.js;filename=_worker.js;type=application/javascript+module")
+
+          echo "$RESPONSE" | jq .
+          echo "$RESPONSE" | jq -e '.success == true' > /dev/null
